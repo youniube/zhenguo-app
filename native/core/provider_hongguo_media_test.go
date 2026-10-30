@@ -208,6 +208,7 @@ func TestHongguoBatchResponseRejectsForeignEpisodeAndInvalidModels(t *testing.T)
 			defer server.Close()
 			d := &Downloader{cfg: Config{Retries: 1}, client: server.Client(), limiter: newRequestLimiter(1, 0)}
 			d.hongguoClient().baseURL = server.URL
+			d.hongguoClient().deviceRegisterURL = server.URL + "/register"
 			if _, err := d.resolveHongguoAppMedia(context.Background(), "800001"); err == nil {
 				t.Fatal("invalid batch response was accepted")
 			}
@@ -289,19 +290,26 @@ func TestHongguoSignedModelDynamicQualitiesAndEncryption(t *testing.T) {
 }
 
 func TestHongguoSignedPlaybackDoesNotFallBackToPublicVideo(t *testing.T) {
-	requests := 0
+	requests, registrations := 0, 0
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		requests++
-		if request.URL.Path != "/novel/player/multi_video_model/v1/" {
+		switch request.URL.Path {
+		case "/novel/player/multi_video_model/v1/":
+			requests++
+			_, _ = io.WriteString(writer, `{"data":{}}`)
+		case "/register":
+			registrations++
+			_, _ = io.WriteString(writer, `{"device_id_str":"8123456789012345678","install_id_str":"8234567890123456789"}`)
+		default:
 			t.Errorf("failed signed playback must not silently select public low quality: %s", request.URL.Path)
+			writer.WriteHeader(http.StatusNotFound)
 		}
-		_, _ = io.WriteString(writer, `{"data":{}}`)
 	}))
 	defer server.Close()
 	d := &Downloader{cfg: Config{Retries: 1, HongguoURL: server.URL}, client: server.Client(), limiter: newRequestLimiter(1, 0)}
 	d.hongguoClient().baseURL = server.URL
+	d.hongguoClient().deviceRegisterURL = server.URL + "/register"
 	_, err := d.resolveHongguoMedia(context.Background(), Task{DramaID: "hongguo:700001", Chapter: Chapter{VideoURL: "hongguo-cenc://800001"}})
-	if err == nil || requests != 1 || !strings.Contains(err.Error(), "高清接口") {
-		t.Fatalf("failed signed playback must report its error: requests=%d, error=%v", requests, err)
+	if err == nil || requests != 2 || registrations != 1 || !strings.Contains(err.Error(), "高清接口") {
+		t.Fatalf("failed signed playback must report its error after one session renewal: requests=%d, registrations=%d, error=%v", requests, registrations, err)
 	}
 }

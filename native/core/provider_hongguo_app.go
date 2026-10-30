@@ -40,25 +40,33 @@ type hongguoCatalogState struct {
 }
 
 type hongguoAppClient struct {
-	mu             sync.Mutex
-	catalogMu      sync.Mutex
-	baseURL        string
-	state          hongguoCatalogState
-	details        map[string]hongguoDetailEntry
-	pending        map[string]*hongguoDetailCall
-	searches       map[string]hongguoSearchEntry
-	searchPending  map[string]*hongguoSearchCall
-	searchSeasons  map[string]*hongguoSearchSeasonCursor
-	suggestions    map[string]hongguoSuggestionEntry
-	suggestPending map[string]*hongguoSuggestionCall
+	mu                sync.Mutex
+	catalogMu         sync.Mutex
+	baseURL           string
+	deviceRegisterURL string
+	playbackDevice    hongguoPlaybackDevice
+	devicePending     *hongguoDeviceCall
+	webOnce           sync.Once
+	webDownloader     *Downloader
+	webPending        chan struct{}
+	webRetryAt        time.Time
+	state             hongguoCatalogState
+	details           map[string]hongguoDetailEntry
+	pending           map[string]*hongguoDetailCall
+	searches          map[string]hongguoSearchEntry
+	searchPending     map[string]*hongguoSearchCall
+	searchSeasons     map[string]*hongguoSearchSeasonCursor
+	suggestions       map[string]hongguoSuggestionEntry
+	suggestPending    map[string]*hongguoSuggestionCall
 }
 
 func (downloader *Downloader) hongguoClient() *hongguoAppClient {
 	downloader.hongguoOnce.Do(func() {
 		downloader.hongguo = &hongguoAppClient{
-			baseURL: hongguoAppBaseURL,
-			state:   hongguoCatalogState{Version: 1, DeviceID: newHongguoDeviceID(), InstallID: newHongguoDeviceID(), Feeds: map[string]hongguoCatalogCursor{}},
-			details: map[string]hongguoDetailEntry{}, pending: map[string]*hongguoDetailCall{},
+			baseURL:           hongguoAppBaseURL,
+			deviceRegisterURL: hongguoDeviceRegisterURL,
+			state:             hongguoCatalogState{Version: 1, DeviceID: newHongguoDeviceID(), InstallID: newHongguoDeviceID(), Feeds: map[string]hongguoCatalogCursor{}},
+			details:           map[string]hongguoDetailEntry{}, pending: map[string]*hongguoDetailCall{},
 			searches: map[string]hongguoSearchEntry{}, searchPending: map[string]*hongguoSearchCall{},
 			searchSeasons: map[string]*hongguoSearchSeasonCursor{},
 			suggestions:   map[string]hongguoSuggestionEntry{}, suggestPending: map[string]*hongguoSuggestionCall{},
