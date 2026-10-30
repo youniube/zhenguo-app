@@ -15,6 +15,8 @@ import (
 	"time"
 )
 
+var errHongguoPlaybackSession = errors.New("红果高清播放会话暂不可用")
+
 func (d *Downloader) hongguoPlaybackModel(ctx context.Context, videoID string) (map[string]any, error) {
 	payload := map[string]any{
 		"biz_param": map[string]any{
@@ -34,6 +36,7 @@ func (d *Downloader) hongguoPlaybackModel(ctx context.Context, videoID string) (
 	client.mu.Unlock()
 	attempts := max(1, min(d.cfg.Retries, 3))
 	var lastErr error
+	var rejectedID string
 	for attempt := 0; attempt < attempts; attempt++ {
 		if attempt > 0 {
 			select {
@@ -42,10 +45,12 @@ func (d *Downloader) hongguoPlaybackModel(ctx context.Context, videoID string) (
 				return nil, ctx.Err()
 			}
 		}
-		deviceID, installID, err := newHongguoPlaybackDeviceIDs()
+		device, err := d.hongguoPlaybackSession(ctx, rejectedID)
 		if err != nil {
-			return nil, errors.New("红果高清播放会话初始化失败")
+			return nil, err
 		}
+		rejectedID = ""
+		deviceID, installID := device.DeviceID, device.InstallID
 		entropy, err := newHongguoPlaybackEntropy()
 		if err != nil {
 			return nil, errors.New("红果高清请求签名初始化失败")
@@ -105,19 +110,26 @@ func (d *Downloader) hongguoPlaybackModel(ctx context.Context, videoID string) (
 			return model, nil
 		}
 		lastErr = err
+		if errors.Is(err, errHongguoPlaybackSession) {
+			rejectedID = deviceID
+			attempts = max(attempts, 2)
+		}
 	}
 	return nil, lastErr
 }
 
 func parseHongguoPlaybackModel(content []byte, videoID string) (map[string]any, error) {
-	if len(content) == 0 || len(content) > providerMaxBodyBytes {
-		return nil, errors.New("红果高清接口未返回有效数据")
+	if len(content) > providerMaxBodyBytes {
+		return nil, errors.New("红果高清接口响应过大")
+	}
+	if len(bytes.TrimSpace(content)) == 0 {
+		return nil, fmt.Errorf("%w：未返回有效数据", errHongguoPlaybackSession)
 	}
 	var result map[string]any
 	decoder := json.NewDecoder(bytes.NewReader(content))
 	decoder.UseNumber()
 	if decoder.Decode(&result) != nil || result == nil {
-		return nil, errors.New("红果高清接口返回格式异常")
+		return nil, fmt.Errorf("%w：响应格式异常", errHongguoPlaybackSession)
 	}
 	code := firstNonEmpty(mapString(result, "code", "Code", "status_code"), mapString(nestedMap(result, "BaseResp"), "StatusCode"))
 	if code != "" && code != "0" {
@@ -136,7 +148,10 @@ func parseHongguoPlaybackModel(content []byte, videoID string) (map[string]any, 
 		}
 	}
 	if len(model) == 0 {
-		return nil, errors.New("红果高清接口未返回所请求分集的播放信息")
+		return nil, fmt.Errorf("%w：未返回所请求分集的播放信息", errHongguoPlaybackSession)
+	}
+	if len(hongguoModelVariants(model)) == 0 && model["fallback_api"] == nil {
+		return nil, fmt.Errorf("%w：播放模型没有清晰度", errHongguoPlaybackSession)
 	}
 	return model, nil
 }

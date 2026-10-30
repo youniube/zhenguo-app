@@ -392,7 +392,7 @@ func nativeDispatch(input nativeInput) (any, error) {
 			nativeState.engine = engine
 		}
 		nativeState.Unlock()
-		version := "0.2.183"
+		version := "0.2.184"
 		return map[string]any{"version": version, "standalone": true, "allSources": buildAllSources == "true", "capabilitySchema": 1, "sources": nativeCapabilities(version)}, nil
 	}
 	engine := nativeState.engine

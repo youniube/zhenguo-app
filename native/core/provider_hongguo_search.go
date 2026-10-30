@@ -22,11 +22,13 @@ const (
 )
 
 type hongguoSearchEntry struct {
-	Dramas    []Drama
-	Total     int
-	Limited   bool
-	Warning   string
-	ExpiresAt time.Time
+	Dramas     []Drama
+	Total      int
+	Limited    bool
+	Warning    string
+	ExpiresAt  time.Time
+	webPage    int
+	webHasMore bool
 }
 
 type hongguoSearchCall struct {
@@ -59,9 +61,11 @@ func (downloader *Downloader) searchHongguoDramas(ctx context.Context, keyword s
 	return downloader.searchHongguoDramasProgress(ctx, keyword, nil)
 }
 
-// searchHongguoDramasPaged 把搜索拆成分页：第 1 页给出名称与综合搜索的首批结果，
-// 第 2 页起每次只跑一轮季数补齐，交给用户手动「加载更多」。
 func (downloader *Downloader) searchHongguoDramasPaged(ctx context.Context, keyword string, page int) (hongguoSearchEntry, bool, error) {
+	keyword, err := hongguoSearchKeyword(keyword)
+	if err != nil {
+		return hongguoSearchEntry{}, false, err
+	}
 	entry, err := downloader.searchHongguoDramas(ctx, keyword)
 	if err != nil {
 		return hongguoSearchEntry{}, false, err
@@ -69,11 +73,25 @@ func (downloader *Downloader) searchHongguoDramasPaged(ctx context.Context, keyw
 	if page <= 1 {
 		return entry, entry.Limited || downloader.hongguoSearchContinuationPending(keyword), nil
 	}
+	if entry.webHasMore && entry.webPage < page {
+		next, pageErr := downloader.fetchHongguoSearchAPI(ctx, keyword, entry.webPage+1)
+		if pageErr != nil {
+			if ctx.Err() != nil {
+				return entry, true, ctx.Err()
+			}
+			entry.Warning = "红果搜索续页暂不可用，已保留现有结果，可重试"
+			return entry, true, nil
+		}
+		entry.Dramas = mergeHongguoSearchDramas(entry.Dramas, next.Dramas)
+		entry.Total = max(entry.Total, next.Total, len(entry.Dramas))
+		entry.webPage, entry.webHasMore = next.webPage, next.webHasMore
+	}
 	limited := downloader.runHongguoSearchSeasons(ctx, keyword, &entry, hongguoSearchContinuationQueries)
+	entry.Limited = entry.webHasMore || limited
 	if len(entry.Dramas) > 0 {
 		downloader.rememberHongguoSearch(keyword, entry)
 	}
-	return entry, limited, nil
+	return entry, entry.Limited, nil
 }
 
 func (downloader *Downloader) rememberHongguoSearch(keyword string, entry hongguoSearchEntry) {
@@ -205,7 +223,8 @@ func (downloader *Downloader) fetchHongguoSearch(ctx context.Context, keyword st
 	if pageErr != nil && namesErr != nil || len(page.Dramas)+len(names) == 0 && (pageErr != nil || namesErr != nil) {
 		return hongguoSearchEntry{}, errors.Join(pageErr, namesErr)
 	}
-	entry := hongguoSearchEntry{Dramas: make([]Drama, 0, len(page.Dramas)+len(names)), Total: page.Total, Limited: page.Limited}
+	entry := hongguoSearchEntry{Dramas: make([]Drama, 0, len(page.Dramas)+len(names)), Total: page.Total, Limited: page.Limited,
+		webPage: page.webPage, webHasMore: page.webHasMore}
 	for _, batch := range [][]Drama{page.Dramas, names} {
 		entry.Dramas = mergeHongguoSearchDramas(entry.Dramas, batch)
 	}
@@ -351,8 +370,32 @@ func hongguoTitleSearchRank(title, query string) int {
 }
 
 func (downloader *Downloader) fetchHongguoSearchPage(ctx context.Context, keyword string) (hongguoSearchEntry, error) {
-	pageURL := hongguoBaseURL + "/search/" + url.PathEscape(keyword)
-	body, err := downloader.fetchProviderText(ctx, pageURL, hongguoBaseURL+"/")
+	entry, apiErr := downloader.fetchHongguoSearchAPI(ctx, keyword, 1)
+	if apiErr == nil && len(entry.Dramas) > 0 {
+		return entry, nil
+	}
+	if ctx.Err() != nil {
+		return hongguoSearchEntry{}, ctx.Err()
+	}
+	page, pageErr := downloader.fetchHongguoSearchSSR(ctx, keyword)
+	if pageErr == nil {
+		return page, nil
+	}
+	if apiErr == nil {
+		return entry, nil
+	}
+	return hongguoSearchEntry{}, errors.Join(apiErr, pageErr)
+}
+
+func (downloader *Downloader) fetchHongguoSearchSSR(ctx context.Context, keyword string) (hongguoSearchEntry, error) {
+	base := downloader.providerBaseURL(sourceHongguo)
+	pageURL := base + "/search/" + url.PathEscape(keyword)
+	session, err := downloader.hongguoWebSession(ctx)
+	if err != nil {
+		return hongguoSearchEntry{}, err
+	}
+	ctx = context.WithValue(ctx, providerTextUserAgentKey{}, hongguoWebUserAgent)
+	body, err := session.fetchProviderText(ctx, pageURL, base+"/")
 	if err != nil {
 		return hongguoSearchEntry{}, err
 	}
